@@ -938,7 +938,7 @@ tool_map = {t.name: t for t in tools}
 # LLM
 # =====================
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
+    model="mixtral-8x7b-32768",
     api_key=GROQ_API_KEY,
     max_retries=0
 ).bind_tools(tools)
