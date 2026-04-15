@@ -774,13 +774,17 @@ async def on_ready():
     # 🌅 Morning greeting — 8:00 AM IST
     scheduler.add_job(morning_greeting, "cron", hour=8, minute=0, id="morning_greeting")
 
-    # 🕐 Midday check-in — 1:00 PM IST
-    scheduler.add_job(midday_checkin, "cron", hour=13, minute=0, id="midday_checkin")
+    # 🕐 Midday check-ins — 1:00 PM and 4:00 PM IST
+    scheduler.add_job(midday_checkin, "cron", hour=13, minute=0, id="midday_checkin_1pm")
+    scheduler.add_job(midday_checkin, "cron", hour=16, minute=0, id="midday_checkin_4pm")
 
-    # 💧 Hydration reminders — 10:00 AM, 3:00 PM, 5:00 PM IST
-    scheduler.add_job(hydration_reminder, "cron", hour=10, minute=0, id="hydration_10am")
-    scheduler.add_job(hydration_reminder, "cron", hour=15, minute=0, id="hydration_3pm")
-    scheduler.add_job(hydration_reminder, "cron", hour=17, minute=0, id="hydration_5pm")
+    # 💧 Hydration reminders — every ~2 hours from 10 AM to 8 PM, with ±30 min jitter for randomness
+    scheduler.add_job(hydration_reminder, "cron", hour=10, minute=0, jitter=1800, id="hydration_10am")
+    scheduler.add_job(hydration_reminder, "cron", hour=12, minute=0, jitter=1800, id="hydration_12pm")
+    scheduler.add_job(hydration_reminder, "cron", hour=14, minute=0, jitter=1800, id="hydration_2pm")
+    scheduler.add_job(hydration_reminder, "cron", hour=16, minute=0, jitter=1800, id="hydration_4pm")
+    scheduler.add_job(hydration_reminder, "cron", hour=18, minute=0, jitter=1800, id="hydration_6pm")
+    scheduler.add_job(hydration_reminder, "cron", hour=20, minute=0, jitter=1800, id="hydration_8pm")
 
     # 🚶 Walk reminder — 5:30 PM IST
     scheduler.add_job(walk_reminder, "cron", hour=17, minute=30, id="walk_reminder")
@@ -788,18 +792,18 @@ async def on_ready():
     # 💻 Work session suggestion — 7:30 PM IST
     scheduler.add_job(work_session_reminder, "cron", hour=19, minute=30, id="work_session")
 
-    # 🌙 Night summary — 10:30 PM IST
-    scheduler.add_job(night_summary, "cron", hour=22, minute=30, id="night_summary")
+    # 🌙 Night summary — 12:00 AM (midnight) IST
+    scheduler.add_job(night_summary, "cron", hour=0, minute=0, id="night_summary")
 
     # Start scheduler AFTER event loop exists
     scheduler.start()
     print(f"✅ Scheduler started with proactive agent behaviors (IST timezone)")
     print(f"   📅 Morning greeting:   8:00 AM")
-    print(f"   💧 Hydration:          10:00 AM, 3:00 PM, 5:00 PM")
-    print(f"   🕐 Midday check-in:    1:00 PM")
+    print(f"   💧 Hydration:          ~10 AM, ~12 PM, ~2 PM, ~4 PM, ~6 PM, ~8 PM (±30 min jitter)")
+    print(f"   🕐 Midday check-ins:   1:00 PM, 4:00 PM")
     print(f"   🚶 Walk reminder:      5:30 PM")
     print(f"   💻 Work session:       7:30 PM")
-    print(f"   🌙 Night summary:      10:30 PM")
+    print(f"   🌙 Night summary:      12:00 AM (midnight)")
     print(f"   Current IST time:      {now_ist().strftime('%I:%M %p')}")
 
 
