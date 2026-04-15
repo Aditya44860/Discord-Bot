@@ -212,17 +212,24 @@ PROACTIVE_FEATURES = {
     },
     "night_summary": {
         "name": "Night Summary",
-        "time": "12:00 AM (midnight)",
+        "time": "11:30 PM",
         "emoji": "🌙",
         "description": "End-of-day recap showing completed vs incomplete tasks, offers to reschedule",
         "job_ids": ["night_summary"],
     },
     "journal_reflection": {
         "name": "Daily Journal Reflection",
-        "time": "12:05 AM (after night summary)",
+        "time": "11:40 PM",
         "emoji": "📝",
         "description": "Asks a thoughtful reflection question and saves entries to your personal journal",
         "job_ids": ["journal_reflection"],
+    },
+    "memory_driven_action": {
+        "name": "Autonomous Memory Action",
+        "time": "12:00 AM (midnight)",
+        "emoji": "🧠",
+        "description": "Aurora proactively texts you if she remembers an important event for today (birthdays, exams)",
+        "job_ids": ["autonomous_memory_action"],
     },
 }
 
@@ -351,6 +358,31 @@ def schedule_reminder(channel_id, text, run_time, repeat="once", user_id=None):
             hour=run_time.hour,
             minute=run_time.minute,
             args=[channel_id, text, user_id, "weekly"],
+            id=job_id,
+            replace_existing=True,
+            misfire_grace_time=600
+        )
+    elif repeat == "monthly":
+        scheduler.add_job(
+            send_reminder,
+            "cron",
+            day=run_time.day,
+            hour=run_time.hour,
+            minute=run_time.minute,
+            args=[channel_id, text, user_id, "monthly"],
+            id=job_id,
+            replace_existing=True,
+            misfire_grace_time=600
+        )
+    elif repeat == "yearly":
+        scheduler.add_job(
+            send_reminder,
+            "cron",
+            month=run_time.month,
+            day=run_time.day,
+            hour=run_time.hour,
+            minute=run_time.minute,
+            args=[channel_id, text, user_id, "yearly"],
             id=job_id,
             replace_existing=True,
             misfire_grace_time=600
@@ -712,8 +744,68 @@ async def journal_reflection():
             print(f"Error sending journal reflection to {user_name}: {e}")
 
 
+async def autonomous_memory_check():
+    """Check user memories at 12:01 AM and proactively message them if an event matches today."""
+    if not is_feature_enabled("memory_driven_action"):
+        print("Skipping autonomous memory check: Feature disabled.")
+        return
+
+    channel = await get_channel_robust(CHANNEL_ID)
+    if not channel:
+        print("Skipping autonomous memory check: Channel not found.")
+        return
+
+    users = get_all_tracked_users()
+    current_time = now_ist().strftime('%A, %B %d, %Y')
+    print(f"Starting autonomous memory check for {len(users)} users...")
+
+    for user_name, user_id in users:
+        try:
+            memories = load_user_memories(user_id)
+            if "No memories" in memories:
+                continue
+                
+            prompt = f"""You are Aurora, a warm, caring personal AI assistant. 
+You are checking your memory for the user {user_name} to see if you should send them a proactive message today.
+
+Today's date is: {current_time}.
+Here is what you remember about them:
+{memories}
+
+Task: Is there any event happening TODAY or TOMORROW (birthday, anniversary, exam, trip, etc.) based strictly on these memories?
+If NO: Reply EXACTLY with the word "SKIP" and nothing else.
+If YES: Write a warm, caring, encouraging message to them (e.g. wishing them happy birthday or good luck). Do NOT say "Based on my memory". Just talk naturally. Keep it concise.
+"""
+            messages = [SystemMessage(content=prompt)]
+            
+            response_text = "SKIP"
+            for tier_name, llm in llm_cascade:
+                current_dt = now_ist()
+                if tier_name in tier_cooldowns and current_dt < tier_cooldowns[tier_name]:
+                    continue
+                try:
+                    res = llm.invoke(messages)
+                    response_text = res.content.strip()
+                    break
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "429" in error_str or "rate" in error_str or "limit" in error_str:
+                        tier_cooldowns[tier_name] = current_dt + timedelta(seconds=COOLDOWN_SECONDS)
+                        continue
+            
+            # If the LLM didn't return SKIP, it generated a proactive message
+            if response_text and response_text.upper() != "SKIP" and not response_text.upper().startswith("SKIP"):
+                msg = f"✨ <@{user_id}>\n{response_text}"
+                await channel.send(msg)
+                active_users[user_id] = now_ist()
+                
+        except Exception as e:
+            print(f"Error in autonomous memory check for {user_name}: {e}")
+
+
 # =====================
 # TOOLS
+
 # =====================
 def set_row_color(sheet, row_idx, status):
     colors = {
@@ -822,7 +914,7 @@ def delete_task(task_name: str, user: str):
 @tool
 def schedule_reminder_tool(time: str, task: str, repeat: str, user: str, user_id: str):
     """Schedule a reminder for a task at a specific time.
-    Use repeat='daily' for daily reminders, repeat='weekly' for weekly reminders, or repeat='once' for one-time reminders.
+    Use repeat='yearly' for yearly events (like birthdays/anniversaries), 'monthly' for monthly recurring tasks, 'daily' for daily reminders, 'weekly' for weekly reminders, or 'once' for one-time reminders.
     The time can be natural language like 'tomorrow at 9am', '5pm', 'in 2 hours', etc.
     user_id is the Discord user ID number for tagging.
     """
@@ -858,6 +950,11 @@ def schedule_reminder_tool(time: str, task: str, repeat: str, user: str, user_id
         return f"Daily reminder set for '{task}' at {parsed_time.strftime('%I:%M %p')} every day."
     elif repeat == "weekly":
         return f"Weekly reminder set for '{task}' at {parsed_time.strftime('%I:%M %p')} every {parsed_time.strftime('%A')}."
+    elif repeat == "monthly":
+        ordinal = lambda n: "%d%s" % (n,"tsnrhtdd"[(n//10%10!=1)*(n%10<4)*n%10::4])
+        return f"Monthly reminder set for '{task}' at {parsed_time.strftime('%I:%M %p')} on the {ordinal(parsed_time.day)} of every month."
+    elif repeat == "yearly":
+        return f"Yearly reminder set for '{task}' at {parsed_time.strftime('%I:%M %p')} on {parsed_time.strftime('%B %d')} every year."
     else:
         return f"One-time reminder set for '{task}' at {parsed_time.strftime('%I:%M %p on %B %d, %Y')}."
 
@@ -1011,6 +1108,9 @@ def toggle_proactive(feature: str, action: str, user_id: str):
         "journal_reflection": ["journal_reflection"],
         "reflection": ["journal_reflection"],
         "diary": ["journal_reflection"],
+        "memory": ["memory_driven_action"],
+        "memory_action": ["memory_driven_action"],
+        "autonomous": ["memory_driven_action"],
     }
 
     feature_lower = feature.lower().strip()
@@ -1381,7 +1481,19 @@ def agent_node(state):
 
     # All 3 tiers exhausted
     print(f"[Cascade] All tiers exhausted. Last error: {last_error}")
+
+    # If tools already executed, craft a simple response instead of failing
+    last_msg = state["messages"][-1] if state["messages"] else None
+    if isinstance(last_msg, ToolMessage):
+        # Tools ran successfully but we can't generate a polished response
+        tool_result = last_msg.content if last_msg.content else "Done"
+        # Create a simple AI response based on tool output
+        from langchain_core.messages import AIMessage as FallbackAI
+        print(f"[Cascade] Tools executed. Crafting fallback response from tool result.")
+        return {"messages": [FallbackAI(content=f"✅ Done! {tool_result}")]}
+
     raise last_error
+
 
 
 def tool_node(state):
@@ -1488,11 +1600,15 @@ async def on_ready():
     # 💻 Work session suggestion — 7:30 PM IST
     scheduler.add_job(work_session_reminder, "cron", hour=19, minute=30, id="work_session", misfire_grace_time=600)
 
-    # 🌙 Night summary — 12:00 AM (midnight) IST
-    scheduler.add_job(night_summary, "cron", hour=0, minute=0, id="night_summary", misfire_grace_time=600)
+    # 🌙 Night summary — 11:30 PM IST
+    scheduler.add_job(night_summary, "cron", hour=23, minute=30, id="night_summary", misfire_grace_time=600)
 
-    # 📝 Journal reflection — 12:05 AM IST (5 min after night summary)
-    scheduler.add_job(journal_reflection, "cron", hour=0, minute=5, id="journal_reflection", misfire_grace_time=600)
+    # 📝 Journal reflection — 11:40 PM IST
+    scheduler.add_job(journal_reflection, "cron", hour=23, minute=40, id="journal_reflection", misfire_grace_time=600)
+
+    # 🧠 Autonomous Memory Action — 12:00 AM (midnight) IST
+    scheduler.add_job(autonomous_memory_check, "cron", hour=0, minute=0, id="autonomous_memory_action", misfire_grace_time=600)
+
 
     # Start scheduler AFTER event loop exists
     scheduler.start()
@@ -1502,8 +1618,10 @@ async def on_ready():
     print(f"   🕐 Midday check-ins:   12:00 PM, 4:00 PM")
     print(f"   🚶 Walk reminder:      5:30 PM")
     print(f"   💻 Work session:       7:30 PM")
-    print(f"   🌙 Night summary:      12:00 AM (midnight)")
-    print(f"   📝 Journal reflection: 12:05 AM")
+    print(f"   🌙 Night summary:      11:30 PM")
+    print(f"   📝 Journal reflection: 11:40 PM")
+    print(f"   🧠 Memory Action:      12:00 AM (midnight)")
+
     print(f"   Current IST time:      {now_ist().strftime('%I:%M %p')}")
     print(f"   Feature toggles:       {proactive_settings}")
 
