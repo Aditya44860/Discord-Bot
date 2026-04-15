@@ -1091,21 +1091,39 @@ tools = [add_tasks, get_tasks, update_task, delete_task, schedule_reminder_tool,
 tool_map = {t.name: t for t in tools}
 
 # =====================
-# LLM (Multi-Model Architecture)
+# LLM (3-Tier Cascading Architecture)
 # =====================
-# Fast model: tool detection & calling (cheap, high rate limit, near-instant)
-llm_fast = ChatGroq(
+# Each model has its own separate rate limit bucket on Groq.
+# By cascading 70B → 20B → 8B, we get ~3x the daily capacity.
+#
+# Tier 1 (Primary):  Best quality, used first
+# Tier 2 (Fallback): Good quality, used when Tier 1 is rate-limited
+# Tier 3 (Safety):   Fast & reliable, last resort
+
+llm_tier1 = ChatGroq(
+    model="llama-3.3-70b-versatile",
+    api_key=GROQ_API_KEY,
+    max_retries=0
+).bind_tools(tools)
+
+llm_tier2 = ChatGroq(
+    model="openai/gpt-oss-20b",
+    api_key=GROQ_API_KEY,
+    max_retries=0
+).bind_tools(tools)
+
+llm_tier3 = ChatGroq(
     model="llama-3.1-8b-instant",
     api_key=GROQ_API_KEY,
     max_retries=0
 ).bind_tools(tools)
 
-# Smart model: reasoning, summaries, and crafting final responses (higher quality)
-llm_smart = ChatGroq(
-    model="openai/gpt-oss-20b",
-    api_key=GROQ_API_KEY,
-    max_retries=0
-).bind_tools(tools)
+# Ordered list for the cascade
+llm_cascade = [
+    ("Tier 1 — 70B", llm_tier1),
+    ("Tier 2 — 20B", llm_tier2),
+    ("Tier 3 — 8B",  llm_tier3),
+]
 
 # =====================
 # SYSTEM PROMPT
@@ -1184,24 +1202,27 @@ def agent_node(state):
     # The system prompt includes the CURRENT time so the LLM always knows the real time
     messages = [SystemMessage(content=get_system_prompt())] + state["messages"]
 
-    # Primary: Try the SMART model (20B) — handles both tools and conversation
-    # Fallback: If rate-limited, use the FAST model (8B) instead of failing
-    try:
-        print("[Multi-Model] Using SMART model (20B)...")
-        response = llm_smart.invoke(messages)
-    except Exception as e:
-        error_str = str(e).lower()
-        if "429" in error_str or "rate" in error_str or "limit" in error_str:
-            print("[Multi-Model] 20B rate-limited, falling back to FAST model (8B)...")
-            try:
-                response = llm_fast.invoke(messages)
-            except Exception as e2:
-                # Both models failed — re-raise for the retry logic in on_message
-                raise e2
-        else:
-            raise e
+    # 3-Tier Cascade: Try each model in order. If one is rate-limited, fall to the next.
+    last_error = None
+    for tier_name, llm in llm_cascade:
+        try:
+            print(f"[Cascade] Trying {tier_name}...")
+            response = llm.invoke(messages)
+            print(f"[Cascade] {tier_name} succeeded.")
+            return {"messages": [response]}
+        except Exception as e:
+            last_error = e
+            error_str = str(e).lower()
+            if "429" in error_str or "rate" in error_str or "limit" in error_str:
+                print(f"[Cascade] {tier_name} rate-limited. Falling to next tier...")
+                continue  # Try next model
+            else:
+                # Non-rate-limit error — don't cascade, just raise
+                raise e
 
-    return {"messages": [response]}
+    # All 3 tiers exhausted
+    print(f"[Cascade] All tiers exhausted. Last error: {last_error}")
+    raise last_error
 
 
 def tool_node(state):
