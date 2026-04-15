@@ -237,14 +237,28 @@ def is_feature_enabled(feature_id):
 # =====================
 scheduler = AsyncIOScheduler(timezone=IST)
 
+async def get_channel_robust(channel_id):
+    """Attempt to get channel from cache, then fetch from API if not found."""
+    channel = client.get_channel(channel_id)
+    if channel:
+        return channel
+    try:
+        print(f"Channel {channel_id} not in cache, fetching from API...")
+        return await client.fetch_channel(channel_id)
+    except Exception as e:
+        print(f"Error fetching channel {channel_id}: {e}")
+        return None
+
 async def send_reminder(channel_id, text, user_id, reminder_type="once"):
     """Send a reminder and tag the user. Auto-remove one-time reminders from the sheet."""
-    channel = client.get_channel(channel_id)
+    channel = await get_channel_robust(channel_id)
     if channel:
         mention = f"<@{user_id}>"
         await channel.send(f"⏰ {mention} **Reminder:** {text}")
-        # Mark user as active so they can respond without saying "aurora"
+        print(f"Reminder sent: '{text}' to <@{user_id}>")
         active_users[user_id] = now_ist()
+    else:
+        print(f"Failed to send reminder '{text}': Channel not found.")
 
     # Auto-remove one-time reminders from the sheet after firing
     if reminder_type == "once":
@@ -274,7 +288,8 @@ def schedule_reminder(channel_id, text, run_time, repeat="once", user_id=None):
             minute=run_time.minute,
             args=[channel_id, text, user_id, "daily"],
             id=job_id,
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=600
         )
     elif repeat == "weekly":
         scheduler.add_job(
@@ -285,7 +300,8 @@ def schedule_reminder(channel_id, text, run_time, repeat="once", user_id=None):
             minute=run_time.minute,
             args=[channel_id, text, user_id, "weekly"],
             id=job_id,
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=600
         )
     else:
         # One-time reminder
@@ -295,7 +311,8 @@ def schedule_reminder(channel_id, text, run_time, repeat="once", user_id=None):
             run_date=run_time,
             args=[channel_id, text, user_id, "once"],
             id=job_id,
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=600
         )
     return job_id
 
@@ -342,14 +359,18 @@ def load_reminders_from_sheet():
 async def morning_greeting():
     """Send a warm morning greeting with today's tasks at 8:00 AM IST."""
     if not is_feature_enabled("morning_greeting"):
+        print("Skipping morning greeting: Feature disabled.")
         return
 
-    channel = client.get_channel(CHANNEL_ID)
+    channel = await get_channel_robust(CHANNEL_ID)
     if not channel:
+        print("Skipping morning greeting: Channel not found.")
         return
 
     users = get_all_tracked_users()
+    print(f"Starting morning greeting for {len(users)} users...")
     current_time = now_ist()
+    # ... (rest of function logic)
 
     greetings = [
         "Rise and shine! ☀️",
@@ -392,14 +413,18 @@ async def morning_greeting():
 async def midday_checkin():
     """Send a midday check-in on task progress."""
     if not is_feature_enabled("midday_checkin"):
+        print("Skipping midday check-in: Feature disabled.")
         return
 
-    channel = client.get_channel(CHANNEL_ID)
+    channel = await get_channel_robust(CHANNEL_ID)
     if not channel:
+        print("Skipping midday check-in: Channel not found.")
         return
 
     users = get_all_tracked_users()
+    print(f"Starting midday check-in for {len(users)} users...")
     current_time = now_ist()
+    # ... (rest of function logic)
     today = current_time.strftime("%Y-%m-%d")
 
     for user_name, user_id in users:
@@ -437,11 +462,16 @@ async def midday_checkin():
 async def hydration_reminder():
     """Send periodic hydration reminders."""
     if not is_feature_enabled("hydration"):
+        print("Skipping hydration reminder: Feature disabled.")
         return
 
-    channel = client.get_channel(CHANNEL_ID)
+    channel = await get_channel_robust(CHANNEL_ID)
     if not channel:
+        print("Skipping hydration reminder: Channel not found.")
         return
+
+    print("Sending hydration reminder...")
+    # ... (rest of function logic)
 
     messages = [
         "💧 Quick hydration check — have you sipped some water recently? Your body will thank you! 🌊",
@@ -458,11 +488,16 @@ async def hydration_reminder():
 async def walk_reminder():
     """Send a walk reminder at 5:30 PM IST."""
     if not is_feature_enabled("walk_reminder"):
+        print("Skipping walk reminder: Feature disabled.")
         return
 
-    channel = client.get_channel(CHANNEL_ID)
+    channel = await get_channel_robust(CHANNEL_ID)
     if not channel:
+        print("Skipping walk reminder: Channel not found.")
         return
+
+    print("Sending walk reminder...")
+    # ... (rest of logic)
 
     messages = [
         "🚶‍♂️ It's the golden hour! Perfect time for an evening walk (5:30 – 7:00 PM). Fresh air, clear mind! 🌅🍃",
@@ -477,13 +512,17 @@ async def walk_reminder():
 async def work_session_reminder():
     """Suggest starting a work session at 7:30 PM IST."""
     if not is_feature_enabled("work_session"):
+        print("Skipping work session reminder: Feature disabled.")
         return
 
-    channel = client.get_channel(CHANNEL_ID)
+    channel = await get_channel_robust(CHANNEL_ID)
     if not channel:
+        print("Skipping work session reminder: Channel not found.")
         return
 
     users = get_all_tracked_users()
+    print(f"Starting work session suggestions for {len(users)} users...")
+    # ... (rest of logic)
 
     for user_name, user_id in users:
         try:
@@ -516,14 +555,18 @@ async def work_session_reminder():
 async def night_summary():
     """Send an end-of-day summary at midnight IST and ask about rescheduling."""
     if not is_feature_enabled("night_summary"):
+        print("Skipping night summary: Feature disabled.")
         return
 
-    channel = client.get_channel(CHANNEL_ID)
+    channel = await get_channel_robust(CHANNEL_ID)
     if not channel:
+        print("Skipping night summary: Channel not found.")
         return
 
     users = get_all_tracked_users()
+    print(f"Starting night summary for {len(users)} users...")
     current_time = now_ist()
+    # ... (rest of logic)
     # At midnight, "today" is technically the new day, so look at yesterday's tasks
     yesterday = (current_time - timedelta(days=1)).strftime("%Y-%m-%d")
     today = current_time.strftime("%Y-%m-%d")
@@ -1102,30 +1145,30 @@ async def on_ready():
     # =====================
 
     # 🌅 Morning greeting — 8:00 AM IST
-    scheduler.add_job(morning_greeting, "cron", hour=8, minute=0, id="morning_greeting")
+    scheduler.add_job(morning_greeting, "cron", hour=8, minute=0, id="morning_greeting", misfire_grace_time=600)
 
     # 🕐 Midday check-ins — 12:00 PM and 4:00 PM IST
-    scheduler.add_job(midday_checkin, "cron", hour=12, minute=0, id="midday_checkin_12pm")
-    scheduler.add_job(midday_checkin, "cron", hour=16, minute=0, id="midday_checkin_4pm")
+    scheduler.add_job(midday_checkin, "cron", hour=12, minute=0, id="midday_checkin_12pm", misfire_grace_time=600)
+    scheduler.add_job(midday_checkin, "cron", hour=16, minute=0, id="midday_checkin_4pm", misfire_grace_time=600)
 
     # 💧 Hydration reminders — every ~2 hours from 10 AM to 12 AM, with ±30 min jitter for randomness
-    scheduler.add_job(hydration_reminder, "cron", hour=10, minute=0, jitter=1800, id="hydration_10am")
-    scheduler.add_job(hydration_reminder, "cron", hour=12, minute=0, jitter=1800, id="hydration_12pm")
-    scheduler.add_job(hydration_reminder, "cron", hour=14, minute=0, jitter=1800, id="hydration_2pm")
-    scheduler.add_job(hydration_reminder, "cron", hour=16, minute=0, jitter=1800, id="hydration_4pm")
-    scheduler.add_job(hydration_reminder, "cron", hour=18, minute=0, jitter=1800, id="hydration_6pm")
-    scheduler.add_job(hydration_reminder, "cron", hour=20, minute=0, jitter=1800, id="hydration_8pm")
-    scheduler.add_job(hydration_reminder, "cron", hour=22, minute=0, jitter=1800, id="hydration_10pm")
-    scheduler.add_job(hydration_reminder, "cron", hour=23, minute=50, jitter=600, id="hydration_12am")
+    scheduler.add_job(hydration_reminder, "cron", hour=10, minute=0, jitter=1800, id="hydration_10am", misfire_grace_time=600)
+    scheduler.add_job(hydration_reminder, "cron", hour=12, minute=0, jitter=1800, id="hydration_12pm", misfire_grace_time=600)
+    scheduler.add_job(hydration_reminder, "cron", hour=14, minute=0, jitter=1800, id="hydration_2pm", misfire_grace_time=600)
+    scheduler.add_job(hydration_reminder, "cron", hour=16, minute=0, jitter=1800, id="hydration_4pm", misfire_grace_time=600)
+    scheduler.add_job(hydration_reminder, "cron", hour=18, minute=0, jitter=1800, id="hydration_6pm", misfire_grace_time=600)
+    scheduler.add_job(hydration_reminder, "cron", hour=20, minute=0, jitter=1800, id="hydration_8pm", misfire_grace_time=600)
+    scheduler.add_job(hydration_reminder, "cron", hour=22, minute=0, jitter=1800, id="hydration_10pm", misfire_grace_time=600)
+    scheduler.add_job(hydration_reminder, "cron", hour=23, minute=50, jitter=600, id="hydration_12am", misfire_grace_time=600)
 
     # 🚶 Walk reminder — 5:30 PM IST
-    scheduler.add_job(walk_reminder, "cron", hour=17, minute=30, id="walk_reminder")
+    scheduler.add_job(walk_reminder, "cron", hour=17, minute=30, id="walk_reminder", misfire_grace_time=600)
 
     # 💻 Work session suggestion — 7:30 PM IST
-    scheduler.add_job(work_session_reminder, "cron", hour=19, minute=30, id="work_session")
+    scheduler.add_job(work_session_reminder, "cron", hour=19, minute=30, id="work_session", misfire_grace_time=600)
 
     # 🌙 Night summary — 12:00 AM (midnight) IST
-    scheduler.add_job(night_summary, "cron", hour=0, minute=0, id="night_summary")
+    scheduler.add_job(night_summary, "cron", hour=0, minute=0, id="night_summary", misfire_grace_time=600)
 
     # Start scheduler AFTER event loop exists
     scheduler.start()
