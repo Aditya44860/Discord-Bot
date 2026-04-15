@@ -88,6 +88,15 @@ def get_reminders_sheet():
         ws.append_row(["User", "User ID", "Date", "Reminder", "Type", "Time"])
         return ws
 
+def get_journal_sheet():
+    """Get or create the 'journal' sheet for daily reflections."""
+    try:
+        return spreadsheet.worksheet("journal")
+    except:
+        ws = spreadsheet.add_worksheet(title="journal", rows="1000", cols="4")
+        ws.append_row(["Date", "Username", "User ID", "Reflection"])
+        return ws
+
 def get_users_sheet():
     """Get or create the 'aurora_users' sheet to track registered users."""
     try:
@@ -172,6 +181,13 @@ PROACTIVE_FEATURES = {
         "emoji": "🌙",
         "description": "End-of-day recap showing completed vs incomplete tasks, offers to reschedule",
         "job_ids": ["night_summary"],
+    },
+    "journal_reflection": {
+        "name": "Daily Journal Reflection",
+        "time": "12:05 AM (after night summary)",
+        "emoji": "📝",
+        "description": "Asks a thoughtful reflection question and saves entries to your personal journal",
+        "job_ids": ["journal_reflection"],
     },
 }
 
@@ -620,6 +636,47 @@ async def night_summary():
             print(f"Error sending night summary to {user_name}: {e}")
 
 
+async def journal_reflection():
+    """Send a daily reflection prompt at 12:05 AM IST, 5 minutes after night summary."""
+    if not is_feature_enabled("journal_reflection"):
+        print("Skipping journal reflection: Feature disabled.")
+        return
+
+    channel = await get_channel_robust(CHANNEL_ID)
+    if not channel:
+        print("Skipping journal reflection: Channel not found.")
+        return
+
+    users = get_all_tracked_users()
+    print(f"Starting journal reflection for {len(users)} users...")
+
+    reflection_questions = [
+        "What was the most meaningful thing that happened today?",
+        "What's one thing you learned today that you didn't know yesterday?",
+        "What moment today made you smile?",
+        "If you could relive one moment from today, what would it be?",
+        "What's one thing you're grateful for today?",
+        "What challenged you today, and how did you handle it?",
+        "What's one thing you did today that your future self will thank you for?",
+        "What's something you wish you had done differently today?",
+        "Who made a positive impact on your day, and why?",
+        "What's one word that describes how you felt today?",
+    ]
+
+    question = random.choice(reflection_questions)
+
+    for user_name, user_id in users:
+        try:
+            msg = f"📝 **Daily Reflection** — <@{user_id}>\n\n"
+            msg += f"✨ *{question}*\n\n"
+            msg += "_Take a moment to reflect. Reply with your thoughts and I'll save them to your journal._ 📖"
+
+            await channel.send(msg)
+            active_users[user_id] = now_ist()
+        except Exception as e:
+            print(f"Error sending journal reflection to {user_name}: {e}")
+
+
 # =====================
 # TOOLS
 # =====================
@@ -915,6 +972,10 @@ def toggle_proactive(feature: str, action: str, user_id: str):
         "night": ["night_summary"],
         "night_summary": ["night_summary"],
         "summary": ["night_summary"],
+        "journal": ["journal_reflection"],
+        "journal_reflection": ["journal_reflection"],
+        "reflection": ["journal_reflection"],
+        "diary": ["journal_reflection"],
     }
 
     feature_lower = feature.lower().strip()
@@ -974,8 +1035,51 @@ def reschedule_tasks(user: str):
     return f"Rescheduled {count} task(s) to today ({today}): {', '.join(rescheduled)}"
 
 
+@tool
+def add_journal(reflection: str, user: str, user_id: str):
+    """Save a daily journal/reflection entry for the user.
+    Use this when the user shares a reflection, thought, or journal entry — especially after the nightly reflection prompt.
+    reflection: The user's reflection text.
+    user: Discord username.
+    user_id: Discord user ID.
+    """
+    try:
+        sheet = get_journal_sheet()
+        date = now_ist().strftime("%Y-%m-%d")
+        sheet.append_row([date, str(user), str(user_id), reflection])
+        return f"Journal entry saved for {date}."
+    except Exception as e:
+        return f"Error saving journal entry: {e}"
+
+
+@tool
+def get_journal(user_id: str, days: int = 7):
+    """Retrieve recent journal entries for the user.
+    user_id: Discord user ID.
+    days: Number of past days to retrieve (default 7).
+    """
+    try:
+        sheet = get_journal_sheet()
+        rows = sheet.get_all_values()[1:]  # Skip header
+
+        user_entries = []
+        cutoff = (now_ist() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+        for row in rows:
+            if len(row) >= 4 and row[2] == str(user_id) and row[0] >= cutoff:
+                user_entries.append(f"📅 **{row[0]}**: {row[3]}")
+
+        if not user_entries:
+            return f"No journal entries found in the last {days} days."
+
+        return f"**Your Journal (last {days} days):**\n" + "\n".join(user_entries)
+    except Exception as e:
+        return f"Error fetching journal entries: {e}"
+
+
 tools = [add_tasks, get_tasks, update_task, delete_task, schedule_reminder_tool,
-         get_reminders, delete_reminder, shift_reminder, toggle_proactive, list_proactive, reschedule_tasks]
+         get_reminders, delete_reminder, shift_reminder, toggle_proactive, list_proactive,
+         reschedule_tasks, add_journal, get_journal]
 tool_map = {t.name: t for t in tools}
 
 # =====================
@@ -1020,9 +1124,11 @@ You send the following proactive messages every day. Each can be individually to
    - ALWAYS pass the user_id parameter — it is provided in the message metadata as "user_id: <number>".
 - **delete_reminder**: Use this to cancel/delete a user-created reminder (e.g. "delete the water reminder", "cancel the call mom reminder"). This only affects reminders the user set, NOT proactive features.
 - **shift_reminder**: Use this when the user wants to change the time of an existing reminder (e.g. "move the call mom reminder to 6pm", "shift wake guneet to 2pm").
-- **toggle_proactive**: Use this when the user wants to turn ON or OFF any of Aurora's proactive features (e.g. "turn off water reminders", "disable morning greeting", "turn off all proactive messages", "enable walk reminder"). This is for the SYSTEM features, not user-created reminders.
+- **toggle_proactive**: Use this when the user wants to turn ON or OFF any of Aurora's proactive features (e.g. "turn off water reminders", "disable morning greeting", "turn off all proactive messages", "enable walk reminder", "turn off journal"). This is for the SYSTEM features, not user-created reminders.
 - **list_proactive**: Use this when the user asks to see what proactive features are active/enabled or asks "what messages do you send automatically?" or "show proactive settings".
 - **reschedule_tasks**: Use this when the user says "yes" to rescheduling incomplete tasks (typically after the nightly summary), or when they explicitly ask to reschedule incomplete/overdue tasks to today.
+- **add_journal**: Use this when the user shares a reflection, a thought about their day, or responds to the nightly reflection prompt. Save their words as a journal entry. Do NOT ask them to confirm — just save it and acknowledge warmly.
+- **get_journal**: Use this when the user asks to see their past reflections, journal entries, or "what did I write last week?"
 
 **IMPORTANT DISTINCTION — Proactive Features vs. User Reminders:**
 - "Turn off water reminders" / "disable hydration" / "stop sending walk reminders" → use `toggle_proactive`
@@ -1196,6 +1302,9 @@ async def on_ready():
     # 🌙 Night summary — 12:00 AM (midnight) IST
     scheduler.add_job(night_summary, "cron", hour=0, minute=0, id="night_summary", misfire_grace_time=600)
 
+    # 📝 Journal reflection — 12:05 AM IST (5 min after night summary)
+    scheduler.add_job(journal_reflection, "cron", hour=0, minute=5, id="journal_reflection", misfire_grace_time=600)
+
     # Start scheduler AFTER event loop exists
     scheduler.start()
     print(f"✅ Scheduler started with proactive agent behaviors (IST timezone)")
@@ -1205,6 +1314,7 @@ async def on_ready():
     print(f"   🚶 Walk reminder:      5:30 PM")
     print(f"   💻 Work session:       7:30 PM")
     print(f"   🌙 Night summary:      12:00 AM (midnight)")
+    print(f"   📝 Journal reflection: 12:05 AM")
     print(f"   Current IST time:      {now_ist().strftime('%I:%M %p')}")
     print(f"   Feature toggles:       {proactive_settings}")
 
