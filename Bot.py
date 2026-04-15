@@ -1125,6 +1125,11 @@ llm_cascade = [
     ("Tier 3 — 8B",  llm_tier3),
 ]
 
+# Cooldown tracker: when a tier gets rate-limited, skip it for COOLDOWN_SECONDS
+# This avoids wasting time hitting 429s on a model we know is exhausted
+COOLDOWN_SECONDS = 60
+tier_cooldowns = {}  # tier_name -> datetime when cooldown expires
+
 # =====================
 # SYSTEM PROMPT
 # =====================
@@ -1202,9 +1207,24 @@ def agent_node(state):
     # The system prompt includes the CURRENT time so the LLM always knows the real time
     messages = [SystemMessage(content=get_system_prompt())] + state["messages"]
 
-    # 3-Tier Cascade: Try each model in order. If one is rate-limited, fall to the next.
+    # 3-Tier Cascade with cooldown tracking:
+    # Always tries the HIGHEST model first. If it was recently rate-limited,
+    # skip it until the cooldown expires (60s), then try it again.
+    current_time = now_ist()
     last_error = None
+
     for tier_name, llm in llm_cascade:
+        # Check if this tier is on cooldown
+        if tier_name in tier_cooldowns:
+            if current_time < tier_cooldowns[tier_name]:
+                remaining = (tier_cooldowns[tier_name] - current_time).seconds
+                print(f"[Cascade] {tier_name} on cooldown ({remaining}s left). Skipping...")
+                continue
+            else:
+                # Cooldown expired — remove it and try this tier again
+                del tier_cooldowns[tier_name]
+                print(f"[Cascade] {tier_name} cooldown expired. Trying again...")
+
         try:
             print(f"[Cascade] Trying {tier_name}...")
             response = llm.invoke(messages)
@@ -1214,8 +1234,10 @@ def agent_node(state):
             last_error = e
             error_str = str(e).lower()
             if "429" in error_str or "rate" in error_str or "limit" in error_str:
-                print(f"[Cascade] {tier_name} rate-limited. Falling to next tier...")
-                continue  # Try next model
+                # Put this tier on cooldown
+                tier_cooldowns[tier_name] = current_time + timedelta(seconds=COOLDOWN_SECONDS)
+                print(f"[Cascade] {tier_name} rate-limited. Cooldown for {COOLDOWN_SECONDS}s. Falling to next tier...")
+                continue
             else:
                 # Non-rate-limit error — don't cascade, just raise
                 raise e
@@ -1425,12 +1447,25 @@ async def on_message(message):
                 await message.channel.send("Hmm, I seem to have lost my train of thought. Could you try that again?")
                 return
 
+            # Sanitize: Strip leaked function call syntax from models with poor tool support
+            # Catches patterns like <function=name>{...}</function> and <function=name>...</function>
+            final_msg = re.sub(r'<function=\w+>.*?</function>', '', final_msg, flags=re.DOTALL)
+            # Also catch orphaned function tags without closing tags
+            final_msg = re.sub(r'<function=\w+>\{.*?\}', '', final_msg, flags=re.DOTALL)
+            # Clean up leftover whitespace
+            final_msg = re.sub(r'\n{3,}', '\n\n', final_msg).strip()
+
+            if not final_msg:
+                await message.channel.send("Hmm, I seem to have lost my train of thought. Could you try that again?")
+                return
+
             # Discord has a 2000 char limit
             if len(final_msg) > 2000:
                 for i in range(0, len(final_msg), 2000):
                     await message.channel.send(final_msg[i:i+2000])
             else:
                 await message.channel.send(final_msg)
+
 
             return  # Success — exit the retry loop
 
