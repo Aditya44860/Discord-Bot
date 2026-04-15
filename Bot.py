@@ -6,6 +6,7 @@ import random
 from difflib import get_close_matches
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
+import traceback
 import pytz
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -978,10 +979,18 @@ tools = [add_tasks, get_tasks, update_task, delete_task, schedule_reminder_tool,
 tool_map = {t.name: t for t in tools}
 
 # =====================
-# LLM
+# LLM (Multi-Model Architecture)
 # =====================
-llm = ChatGroq(
-    model="mixtral-8x7b-32768",
+# Fast model: tool detection & calling (cheap, high rate limit, near-instant)
+llm_fast = ChatGroq(
+    model="llama-3.1-8b-instant",
+    api_key=GROQ_API_KEY,
+    max_retries=0
+).bind_tools(tools)
+
+# Smart model: reasoning, summaries, and crafting final responses (higher quality)
+llm_smart = ChatGroq(
+    model="openai/gpt-oss-20b",
     api_key=GROQ_API_KEY,
     max_retries=0
 ).bind_tools(tools)
@@ -1060,7 +1069,24 @@ def agent_node(state):
     # Prepend the system prompt dynamically so it isn't stored in message history
     # The system prompt includes the CURRENT time so the LLM always knows the real time
     messages = [SystemMessage(content=get_system_prompt())] + state["messages"]
-    response = llm.invoke(messages)
+
+    last_msg = state["messages"][-1] if state["messages"] else None
+
+    if isinstance(last_msg, ToolMessage):
+        # We just got tool results back — use the SMART model to craft a polished response
+        print("[Multi-Model] Using SMART model (20B) for final response after tools.")
+        response = llm_smart.invoke(messages)
+    else:
+        # First pass — use the FAST model to detect if tools are needed
+        print("[Multi-Model] Using FAST model (8B) for tool detection...")
+        response = llm_fast.invoke(messages)
+
+        # If the fast model didn't call any tools, it means this is a conversation/reasoning task
+        # Re-invoke with the SMART model for a higher-quality response
+        if not (hasattr(response, "tool_calls") and response.tool_calls):
+            print("[Multi-Model] No tools needed — switching to SMART model (20B) for quality response.")
+            response = llm_smart.invoke(messages)
+
     return {"messages": [response]}
 
 def tool_node(state):
@@ -1233,40 +1259,58 @@ async def on_message(message):
 
     config = {"configurable": {"thread_id": str(message.author.id)}}
 
-    try:
-        result = app.invoke(input_state, config=config)
+    # Auto-retry up to 3 times for transient errors
+    max_retries = 3
+    last_error = None
 
-        # Find the last AI message in the result
-        final_msg = None
-        for msg in reversed(result["messages"]):
-            if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
-                final_msg = msg.content
-                break
+    for attempt in range(1, max_retries + 1):
+        try:
+            result = app.invoke(input_state, config=config)
 
-        if not final_msg:
-            # Fallback: get any last message with content
+            # Find the last AI message in the result
+            final_msg = None
             for msg in reversed(result["messages"]):
-                if hasattr(msg, "content") and msg.content:
+                if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
                     final_msg = msg.content
                     break
 
-        if not final_msg:
-            await message.channel.send("Hmm, I seem to have lost my train of thought. Could you try that again?")
-            return
+            if not final_msg:
+                # Fallback: get any last message with content
+                for msg in reversed(result["messages"]):
+                    if hasattr(msg, "content") and msg.content:
+                        final_msg = msg.content
+                        break
 
-        # Discord has a 2000 char limit
-        if len(final_msg) > 2000:
-            for i in range(0, len(final_msg), 2000):
-                await message.channel.send(final_msg[i:i+2000])
-        else:
-            await message.channel.send(final_msg)
+            if not final_msg:
+                await message.channel.send("Hmm, I seem to have lost my train of thought. Could you try that again?")
+                return
 
-    except Exception as e:
-        print(f"Error processing message: {e}")
-        error_msg = str(e).lower()
-        if "429" in error_msg or "rate limit" in error_msg or "ratelimit" in str(type(e).__name__).lower():
-            await message.channel.send("Oops, my mind is moving a bit too fast right now (I've hit my usage limit)! 😅 Give me just a few moments to catch my breath and try again.")
-        else:
-            await message.channel.send("Sorry, I hit a snag processing that. Give me another shot!")
+            # Discord has a 2000 char limit
+            if len(final_msg) > 2000:
+                for i in range(0, len(final_msg), 2000):
+                    await message.channel.send(final_msg[i:i+2000])
+            else:
+                await message.channel.send(final_msg)
+
+            return  # Success — exit the retry loop
+
+        except Exception as e:
+            last_error = e
+            print(f"Error processing message (attempt {attempt}/{max_retries}): {e}")
+            traceback.print_exc()
+
+            error_msg = str(e).lower()
+            if "429" in error_msg or "rate limit" in error_msg or "ratelimit" in str(type(e).__name__).lower():
+                await message.channel.send("Oops, I've hit my usage limit! 😅 Give me a few moments and try again.")
+                return  # Don't retry rate limits — just wait
+
+            if attempt < max_retries:
+                import asyncio
+                await asyncio.sleep(2)  # Wait 2 seconds before retrying
+
+    # All retries exhausted
+    print(f"All {max_retries} attempts failed. Last error: {last_error}")
+    await message.channel.send("Sorry, I'm having trouble right now. Please try again in a minute!")
+
 
 client.run(DISCORD_TOKEN)
