@@ -93,8 +93,8 @@ def get_journal_sheet():
     try:
         return spreadsheet.worksheet("journal")
     except:
-        ws = spreadsheet.add_worksheet(title="journal", rows="1000", cols="4")
-        ws.append_row(["Date", "Username", "User ID", "Reflection"])
+        ws = spreadsheet.add_worksheet(title="journal", rows="1000", cols="5")
+        ws.append_row(["Date", "Username", "User ID", "Question", "Reflection"])
         return ws
 
 def get_users_sheet():
@@ -1036,17 +1036,18 @@ def reschedule_tasks(user: str):
 
 
 @tool
-def add_journal(reflection: str, user: str, user_id: str):
+def add_journal(reflection: str, user: str, user_id: str, question: str = ""):
     """Save a daily journal/reflection entry for the user.
     Use this when the user shares a reflection, thought, or journal entry — especially after the nightly reflection prompt.
     reflection: The user's reflection text.
     user: Discord username.
     user_id: Discord user ID.
+    question: The reflection question that was asked (if responding to the nightly prompt). Leave empty for free-form entries.
     """
     try:
         sheet = get_journal_sheet()
         date = now_ist().strftime("%Y-%m-%d")
-        sheet.append_row([date, str(user), str(user_id), reflection])
+        sheet.append_row([date, str(user), str(user_id), question, reflection])
         return f"Journal entry saved for {date}."
     except Exception as e:
         return f"Error saving journal entry: {e}"
@@ -1066,13 +1067,20 @@ def get_journal(user_id: str, days: int = 7):
         cutoff = (now_ist() - timedelta(days=days)).strftime("%Y-%m-%d")
 
         for row in rows:
-            if len(row) >= 4 and row[2] == str(user_id) and row[0] >= cutoff:
+            if len(row) >= 5 and row[2] == str(user_id) and row[0] >= cutoff:
+                entry = f"📅 **{row[0]}**"
+                if row[3]:  # Question exists
+                    entry += f"\n   ❓ *{row[3]}*"
+                entry += f"\n   💬 {row[4]}"
+                user_entries.append(entry)
+            elif len(row) >= 4 and row[2] == str(user_id) and row[0] >= cutoff:
+                # Backward compatibility for entries without question column
                 user_entries.append(f"📅 **{row[0]}**: {row[3]}")
 
         if not user_entries:
             return f"No journal entries found in the last {days} days."
 
-        return f"**Your Journal (last {days} days):**\n" + "\n".join(user_entries)
+        return f"**Your Journal (last {days} days):**\n\n" + "\n\n".join(user_entries)
     except Exception as e:
         return f"Error fetching journal entries: {e}"
 
@@ -1176,24 +1184,25 @@ def agent_node(state):
     # The system prompt includes the CURRENT time so the LLM always knows the real time
     messages = [SystemMessage(content=get_system_prompt())] + state["messages"]
 
-    last_msg = state["messages"][-1] if state["messages"] else None
-
-    if isinstance(last_msg, ToolMessage):
-        # We just got tool results back — use the SMART model to craft a polished response
-        print("[Multi-Model] Using SMART model (20B) for final response after tools.")
+    # Primary: Try the SMART model (20B) — handles both tools and conversation
+    # Fallback: If rate-limited, use the FAST model (8B) instead of failing
+    try:
+        print("[Multi-Model] Using SMART model (20B)...")
         response = llm_smart.invoke(messages)
-    else:
-        # First pass — use the FAST model to detect if tools are needed
-        print("[Multi-Model] Using FAST model (8B) for tool detection...")
-        response = llm_fast.invoke(messages)
-
-        # If the fast model didn't call any tools, it means this is a conversation/reasoning task
-        # Re-invoke with the SMART model for a higher-quality response
-        if not (hasattr(response, "tool_calls") and response.tool_calls):
-            print("[Multi-Model] No tools needed — switching to SMART model (20B) for quality response.")
-            response = llm_smart.invoke(messages)
+    except Exception as e:
+        error_str = str(e).lower()
+        if "429" in error_str or "rate" in error_str or "limit" in error_str:
+            print("[Multi-Model] 20B rate-limited, falling back to FAST model (8B)...")
+            try:
+                response = llm_fast.invoke(messages)
+            except Exception as e2:
+                # Both models failed — re-raise for the retry logic in on_message
+                raise e2
+        else:
+            raise e
 
     return {"messages": [response]}
+
 
 def tool_node(state):
     messages = state["messages"]
