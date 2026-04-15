@@ -97,6 +97,41 @@ def get_journal_sheet():
         ws.append_row(["Date", "Username", "User ID", "Question", "Reflection"])
         return ws
 
+def get_memory_sheet():
+    """Get or create the 'aurora_memory' sheet for long-term user memories."""
+    try:
+        return spreadsheet.worksheet("aurora_memory")
+    except:
+        ws = spreadsheet.add_worksheet(title="aurora_memory", rows="2000", cols="5")
+        ws.append_row(["User ID", "Username", "Category", "Memory", "Date Added"])
+        return ws
+
+def load_user_memories(user_id):
+    """Load all memories for a specific user. Returns a formatted string for the system prompt."""
+    try:
+        sheet = get_memory_sheet()
+        rows = sheet.get_all_values()[1:]  # Skip header
+
+        memories = []
+        for row in rows:
+            if len(row) >= 4 and row[0] == str(user_id):
+                category = row[2]
+                memory = row[3]
+                memories.append(f"  - [{category}] {memory}")
+
+        if not memories:
+            return "No memories saved yet for this user."
+
+        # Cap at 30 most recent memories to avoid token overflow
+        if len(memories) > 30:
+            memories = memories[-30:]
+
+        return "\n".join(memories)
+    except Exception as e:
+        print(f"Error loading memories: {e}")
+        return "No memories available."
+
+
 def get_users_sheet():
     """Get or create the 'aurora_users' sheet to track registered users."""
     try:
@@ -1085,10 +1120,79 @@ def get_journal(user_id: str, days: int = 7):
         return f"Error fetching journal entries: {e}"
 
 
+@tool
+def save_memory(memory: str, category: str, user: str, user_id: str):
+    """Save a fact, preference, or important detail about the user to long-term memory.
+    Use this PROACTIVELY when you learn something meaningful about the user.
+    memory: The fact or detail to remember (e.g. 'Guneet is their sister', 'Studies at Delhi University').
+    category: One of: 'fact', 'preference', 'relationship', 'pattern', 'important_date'.
+    user: Discord username.
+    user_id: Discord user ID.
+    """
+    try:
+        sheet = get_memory_sheet()
+        date = now_ist().strftime("%Y-%m-%d")
+
+        # Check for duplicate memories to avoid saving the same thing twice
+        rows = sheet.get_all_values()[1:]
+        for row in rows:
+            if len(row) >= 4 and row[0] == str(user_id) and row[3].lower() == memory.lower():
+                return "Already remembered."
+
+        sheet.append_row([str(user_id), str(user), category, memory, date])
+        return f"Memory saved: [{category}] {memory}"
+    except Exception as e:
+        return f"Error saving memory: {e}"
+
+
+@tool
+def get_memories(user_id: str):
+    """Retrieve all saved memories/facts about a user.
+    user_id: Discord user ID.
+    """
+    try:
+        sheet = get_memory_sheet()
+        rows = sheet.get_all_values()[1:]
+
+        user_entries = []
+        for row in rows:
+            if len(row) >= 5 and row[0] == str(user_id):
+                user_entries.append(f"- [{row[2]}] {row[3]} _(saved {row[4]})_")
+
+        if not user_entries:
+            return "No memories saved yet."
+
+        return f"**What I remember about you:**\n" + "\n".join(user_entries)
+    except Exception as e:
+        return f"Error fetching memories: {e}"
+
+
+@tool
+def forget_memory(memory_keyword: str, user_id: str):
+    """Delete a specific memory about the user. Finds the memory by keyword match.
+    memory_keyword: A keyword or phrase to search for in the user's memories.
+    user_id: Discord user ID.
+    """
+    try:
+        sheet = get_memory_sheet()
+        rows = sheet.get_all_values()
+
+        for i, row in enumerate(rows[1:], start=2):
+            if len(row) >= 4 and row[0] == str(user_id) and memory_keyword.lower() in row[3].lower():
+                forgotten = row[3]
+                sheet.delete_rows(i)
+                return f"Forgotten: '{forgotten}'"
+
+        return f"No memory found matching '{memory_keyword}'."
+    except Exception as e:
+        return f"Error deleting memory: {e}"
+
+
 tools = [add_tasks, get_tasks, update_task, delete_task, schedule_reminder_tool,
          get_reminders, delete_reminder, shift_reminder, toggle_proactive, list_proactive,
-         reschedule_tasks, add_journal, get_journal]
+         reschedule_tasks, add_journal, get_journal, save_memory, get_memories, forget_memory]
 tool_map = {t.name: t for t in tools}
+
 
 # =====================
 # LLM (3-Tier Cascading Architecture)
@@ -1137,55 +1241,68 @@ SYSTEM_PROMPT_TEMPLATE = """You are Aurora, an intelligent, empathetic, and high
 
 **Current Date & Time (IST):** {current_time}
 
+**Your Long-Term Memory about this user:**
+{user_memories}
+
 Your core behaviors:
 - **Conversational**: You respond naturally to greetings, small talk, and general questions. If someone says "are you there?" you reply warmly. You don't need a tool for casual conversation.
 - **Knowledgeable**: You can answer general knowledge questions, give advice, explain concepts, and have thoughtful discussions — all without needing tools.
 - **Proactive with tools**: When the user mentions tasks, reminders, scheduling, or their to-do list, you use your tools automatically.
 - **Time-aware**: You always know the current IST time (shown above). Use it when responding to time-related queries. Never say you don't have access to real-time.
+- **Memory-aware**: You have long-term memory about this user (shown above). Use it to personalize your responses. Reference their preferences, relationships, and habits naturally — don't list them out, just weave them into conversation.
 
 **Aurora's Proactive Features (scheduled messages you send automatically):**
 You send the following proactive messages every day. Each can be individually toggled on or off by the user:
 {proactive_status}
 
-**Tasks vs. Reminders** (PAY CLOSE ATTENTION TO THIS):
-- **add_tasks**: Use this for general to-do list items or statements of intent (e.g., "I have to text aditya today", "I need to buy groceries", "Add X to my tasks"). Do NOT schedule a reminder for these unless they explicitly ask for an alarm or a ping at a specific time.
-- **schedule_reminder_tool**: ONLY use this if the user explicitly asks to be alerted, pinged, or reminded at a specific time (e.g., "Remind me to call mom at 5pm", "Set a reminder for X at 9am").
-   - "remind me to drink water at 8pm daily" -> repeat='daily'
-   - "remind me to call mom at 5pm" -> repeat='once'
-   - ALWAYS pass the user_id parameter — it is provided in the message metadata as "user_id: <number>".
-- **delete_reminder**: Use this to cancel/delete a user-created reminder (e.g. "delete the water reminder", "cancel the call mom reminder"). This only affects reminders the user set, NOT proactive features.
-- **shift_reminder**: Use this when the user wants to change the time of an existing reminder (e.g. "move the call mom reminder to 6pm", "shift wake guneet to 2pm").
-- **toggle_proactive**: Use this when the user wants to turn ON or OFF any of Aurora's proactive features (e.g. "turn off water reminders", "disable morning greeting", "turn off all proactive messages", "enable walk reminder", "turn off journal"). This is for the SYSTEM features, not user-created reminders.
-- **list_proactive**: Use this when the user asks to see what proactive features are active/enabled or asks "what messages do you send automatically?" or "show proactive settings".
-- **reschedule_tasks**: Use this when the user says "yes" to rescheduling incomplete tasks (typically after the nightly summary), or when they explicitly ask to reschedule incomplete/overdue tasks to today.
-- **add_journal**: Use this when the user shares a reflection, a thought about their day, or responds to the nightly reflection prompt. Save their words as a journal entry. Do NOT ask them to confirm — just save it and acknowledge warmly.
-- **get_journal**: Use this when the user asks to see their past reflections, journal entries, or "what did I write last week?"
+**Tools Guide:**
+- **add_tasks**: Use for to-do items (e.g., "I have to text aditya today"). Do NOT schedule a reminder unless they explicitly ask.
+- **schedule_reminder_tool**: ONLY for explicit time-based alerts (e.g., "Remind me to call mom at 5pm").
+   - ALWAYS pass the user_id parameter.
+- **delete_reminder**: Cancel a user-created reminder.
+- **shift_reminder**: Change the time of an existing reminder.
+- **toggle_proactive**: Turn ON/OFF Aurora's proactive features (system messages like water reminders, morning greeting, journal, etc.).
+- **list_proactive**: Show all proactive features and their ON/OFF status.
+- **reschedule_tasks**: Move incomplete tasks to today.
+- **add_journal**: Save a journal/reflection entry. Do NOT ask to confirm — just save and acknowledge warmly.
+- **get_journal**: Show past journal entries.
+- **save_memory**: **PROACTIVELY** save important facts about the user. Use this when you learn something new about them:
+   - Personal facts: name, age, college, job, location
+   - Relationships: "Guneet is their sister", "Adi is a close friend"
+   - Preferences: "Likes late night coding", "Prefers short messages"
+   - Important dates: "Exam on May 5th", "Birthday is March 20"
+   - Habits/patterns: "Usually works after 9 PM", "Forgets to drink water"
+   - Do NOT ask "should I remember this?" — just save it silently when something important comes up.
+   - Do NOT save trivial things like "they said hi" or "they asked about weather".
+- **get_memories**: Retrieve saved memories for a user.
+- **forget_memory**: Delete a specific memory when the user asks you to forget something.
 
 **IMPORTANT DISTINCTION — Proactive Features vs. User Reminders:**
-- "Turn off water reminders" / "disable hydration" / "stop sending walk reminders" → use `toggle_proactive`
-- "Delete the reminder to call mom" / "cancel my 5pm alarm" → use `delete_reminder`
+- "Turn off water reminders" / "disable hydration" → use `toggle_proactive`
+- "Delete the reminder to call mom" → use `delete_reminder`
 - "Move the wake guneet reminder to 3pm" → use `shift_reminder`
 
 Your personality:
 - Warm, caring, smart, and encouraging.
 - Helpful and attentive to the user's well-being.
 - Keep responses concise for Discord (under 2000 characters).
+- Use your memories to be personal — mention things you know about them naturally.
 
 Important:
 - The user's Discord username is provided at the end of their message as "(user: <username>)" and their Discord user ID as "(user_id: <id>)".
 - NEVER say you can't do something without trying first.
 - For general chat and questions, just respond directly — no tools needed.
-- **CRITICAL**: Do NOT mention the words "tool", "internal script", "updating a sheet", or reveal your backend logic. Talk naturally like a human assistant. Present output beautifully.
-- **CRITICAL**: ALWAYS use the `get_tasks` tool to check or list the user's tasks. Do NOT answer task queries using information from past messages in the conversation memory, because tasks might have been added or removed since then. 
-- **CRITICAL**: When listing tasks, you MUST format them clearly with numbers or bullet points and INCLUDE THEIR STATUS (pending, done, incomplete). NEVER summarize the list (e.g. do not just say "you have 2 tasks"). Always output the full list of tasks returned by the tool.
-- **CRITICAL**: If a task tool returns a string like "Task ... not found. Did you mean: 'X'?", you MUST reply clearly to the user: "I couldn't find that task. Did you mean **X**?". Do NOT rephrase this behavior and absolutely DO NOT change the suggested task name 'X'. Do not offer to create the task. Just ask if they meant the suggestion."""
+- **CRITICAL**: Do NOT mention the words "tool", "internal script", "updating a sheet", "saving to memory", or reveal your backend logic. Talk naturally like a human assistant.
+- **CRITICAL**: ALWAYS use the `get_tasks` tool to check or list the user's tasks.
+- **CRITICAL**: When listing tasks, format them clearly with numbers and INCLUDE THEIR STATUS.
+- **CRITICAL**: If a task tool returns "Did you mean: 'X'?", reply clearly and do NOT change the suggestion."""
 
 
-def get_system_prompt():
-    """Generate the system prompt with current IST time and proactive feature status injected."""
+def get_system_prompt(user_id=None):
+    """Generate the system prompt with current IST time, proactive status, and user memories injected."""
     current_time = now_ist().strftime('%A, %B %d, %Y at %I:%M %p IST')
 
-    # Build proactive status string so the LLM knows what's on and what's off
+    # Build proactive status string
     status_lines = []
     for feat_id, info in PROACTIVE_FEATURES.items():
         enabled = is_feature_enabled(feat_id)
@@ -1193,7 +1310,17 @@ def get_system_prompt():
         status_lines.append(f"  - {info['emoji']} {info['name']} ({info['time']}): {status} — {info['description']}")
     proactive_status = "\n".join(status_lines)
 
-    return SYSTEM_PROMPT_TEMPLATE.format(current_time=current_time, proactive_status=proactive_status)
+    # Load user memories if user_id is available
+    if user_id:
+        user_memories = load_user_memories(user_id)
+    else:
+        user_memories = "User not identified yet."
+
+    return SYSTEM_PROMPT_TEMPLATE.format(
+        current_time=current_time,
+        proactive_status=proactive_status,
+        user_memories=user_memories
+    )
 
 
 # =====================
@@ -1204,8 +1331,18 @@ class AgentState(TypedDict):
 
 def agent_node(state):
     # Prepend the system prompt dynamically so it isn't stored in message history
-    # The system prompt includes the CURRENT time so the LLM always knows the real time
-    messages = [SystemMessage(content=get_system_prompt())] + state["messages"]
+    # The system prompt includes the CURRENT time and user memories
+
+    # Extract user_id from the last human message metadata for memory loading
+    user_id = None
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, HumanMessage) and msg.content:
+            match = re.search(r'\(user_id:\s*(\d+)\)', msg.content)
+            if match:
+                user_id = match.group(1)
+                break
+
+    messages = [SystemMessage(content=get_system_prompt(user_id=user_id))] + state["messages"]
 
     # 3-Tier Cascade with cooldown tracking:
     # Always tries the HIGHEST model first. If it was recently rate-limited,
