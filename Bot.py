@@ -465,6 +465,8 @@ async def morning_greeting():
         "Good morning! The world is full of possibilities today! 🌈",
     ]
 
+    msg_blocks = [f"{random.choice(greetings)}\n📅 **{current_time.strftime('%A, %B %d, %Y')}**\n"]
+
     for user_name, user_id in users:
         try:
             sheet = get_user_sheet(user_name)
@@ -475,23 +477,25 @@ async def morning_greeting():
                 if len(r) >= 4 and r[3].lower() in ("pending", "incomplete"):
                     pending_tasks.append(r[2])
 
-            msg = f"{random.choice(greetings)} <@{user_id}>\n\n"
-            msg += f"📅 **{current_time.strftime('%A, %B %d, %Y')}**\n\n"
-
+            user_block = f"**<@{user_id}>**:\n"
             if pending_tasks:
-                msg += "📋 **Here's what's on your plate today:**\n"
+                user_block += f"📋 You've got **{len(pending_tasks)}** task(s) on your plate today:\n"
                 for i, task in enumerate(pending_tasks, 1):
-                    msg += f"  {i}. {task}\n"
-                msg += f"\nYou've got **{len(pending_tasks)}** task(s) to tackle. Let's crush it! 💪"
+                    user_block += f"  {i}. {task}\n"
             else:
-                msg += "🎯 You have a clean slate today! Want to plan some tasks? Just let me know 📝"
-
-            msg += "\n\n_Remember: consistency beats intensity. One step at a time!_ 🚶‍♂️"
-
-            await channel.send(msg)
+                user_block += "🎯 Clean slate today! Want to plan some tasks? Let me know.\n"
+            
+            msg_blocks.append(user_block)
             active_users[user_id] = now_ist()
         except Exception as e:
-            print(f"Error sending morning greeting to {user_name}: {e}")
+            print(f"Error compiling morning greeting for {user_name}: {e}")
+
+    msg_blocks.append("\n_Remember: consistency beats intensity. One step at a time!_ 🚶‍♂️")
+
+    try:
+        await channel.send("\n".join(msg_blocks))
+    except Exception as e:
+        print(f"Error sending combined morning greeting: {e}")
 
 
 async def midday_checkin():
@@ -511,6 +515,9 @@ async def midday_checkin():
     # ... (rest of function logic)
     today = current_time.strftime("%Y-%m-%d")
 
+    msg_blocks = ["🕐 **Midday Check-in**\n"]
+    had_tasks = False
+
     for user_name, user_id in users:
         try:
             sheet = get_user_sheet(user_name)
@@ -526,21 +533,27 @@ async def midday_checkin():
                         pending += 1
 
             if done_today == 0 and pending == 0:
-                continue  # Skip users with no tasks
+                continue  # Skip users with no active tasks
 
-            msg = f"🕐 **Midday Check-in** — <@{user_id}>\n\n"
-
-            if done_today > 0:
-                msg += f"✅ You've completed **{done_today}** task(s) so far. Nice work!\n"
-            if pending > 0:
-                msg += f"📌 **{pending}** task(s) still pending. You've got this — keep the momentum going! 🚀"
-            elif pending == 0 and done_today > 0:
-                msg += "🎉 All tasks done before lunch? You're on fire! 🔥"
-
-            await channel.send(msg)
+            had_tasks = True
+            user_block = f"**<@{user_id}>**: "
+            if done_today > 0 and pending > 0:
+                user_block += f"✅ Completed **{done_today}**. 📌 **{pending}** pending. Keep going! 🚀\n"
+            elif done_today > 0 and pending == 0:
+                user_block += f"✅ Completed ALL **{done_today}** tasks! You're on fire! 🔥\n"
+            else:
+                user_block += f"📌 **{pending}** task(s) pending. You've got this! 🚀\n"
+            
+            msg_blocks.append(user_block)
             active_users[user_id] = now_ist()
         except Exception as e:
-            print(f"Error sending midday check-in to {user_name}: {e}")
+            print(f"Error compiling midday check-in for {user_name}: {e}")
+
+    if had_tasks:
+        try:
+            await channel.send("\n".join(msg_blocks))
+        except Exception as e:
+            print(f"Error sending combined midday check-in: {e}")
 
 
 async def hydration_reminder():
@@ -608,6 +621,9 @@ async def work_session_reminder():
     print(f"Starting work session suggestions for {len(users)} users...")
     # ... (rest of logic)
 
+    msg_blocks = ["💻 **Evening Work Session** 🎯\n"]
+    had_tasks = False
+
     for user_name, user_id in users:
         try:
             sheet = get_user_sheet(user_name)
@@ -618,22 +634,27 @@ async def work_session_reminder():
                 if len(r) >= 4 and r[3].lower() == "pending":
                     pending_tasks.append(r[2])
 
-            msg = f"💻 <@{user_id}> It's a great time to settle in for a focused work session! 🎯\n\n"
-
+            user_block = f"**<@{user_id}>**:\n"
             if pending_tasks:
-                msg += "Here's what's still on your list:\n"
+                had_tasks = True
+                user_block += f"🔥 **{len(pending_tasks)} task(s) remaining.** Pick one and start:\n"
                 for i, task in enumerate(pending_tasks, 1):
-                    msg += f"  {i}. {task}\n"
-                msg += f"\n🔥 **{len(pending_tasks)} task(s) remaining.** Pick one and start — momentum will carry you!"
+                    user_block += f"  {i}. {task}\n"
             else:
-                msg += "All your tasks are done! 🎉 Want to work on personal projects or learning goals? This is a great time!"
-
-            msg += "\n\n_Tip: Start with the easiest task to build momentum, or tackle the hardest while you're fresh!_ 🧠"
-
-            await channel.send(msg)
+                user_block += "🎉 All your tasks are done! Great time for personal projects.\n"
+            
+            msg_blocks.append(user_block)
             active_users[user_id] = now_ist()
         except Exception as e:
-            print(f"Error sending work reminder to {user_name}: {e}")
+            print(f"Error compiling work session for {user_name}: {e}")
+
+    msg_blocks.append("\n_Tip: Start with the easiest task to build momentum, or tackle the hardest while you're fresh!_ 🧠")
+    
+    try:
+        await channel.send("\n".join(msg_blocks))
+    except Exception as e:
+        print(f"Error sending combined work session: {e}")
+
 
 
 async def night_summary():
@@ -655,6 +676,10 @@ async def night_summary():
     yesterday = (current_time - timedelta(days=1)).strftime("%Y-%m-%d")
     today = current_time.strftime("%Y-%m-%d")
 
+    msg_blocks = [
+        f"🌙 **End of Day Summary**\n📅 {(current_time - timedelta(days=1)).strftime('%A, %B %d, %Y')}\n"
+    ]
+
     for user_name, user_id in users:
         try:
             sheet = get_user_sheet(user_name)
@@ -675,32 +700,37 @@ async def night_summary():
                     elif status in ("pending", "incomplete"):
                         incomplete.append(task_name)
 
-            msg = f"🌙 **End of Day Summary** — <@{user_id}>\n"
-            msg += f"📅 {(current_time - timedelta(days=1)).strftime('%A, %B %d, %Y')}\n\n"
-
-            if completed:
-                msg += f"✅ **Completed ({len(completed)}):**\n"
-                for t in completed:
-                    msg += f"  ✓ ~~{t}~~\n"
-                msg += "\n"
-
-            if incomplete:
-                msg += f"❌ **Incomplete ({len(incomplete)}):**\n"
-                for t in incomplete:
-                    msg += f"  • {t}\n"
-                msg += "\n💬 Want me to **reschedule** these to tomorrow? Just say **yes** or **no**!"
-            elif completed:
-                msg += "🎉 **You completed everything today! Incredible work!** 🌟\n"
-                msg += "Rest well — you've earned it! 😴"
-            else:
-                msg += "📝 No tasks were tracked today. Tomorrow is a fresh start! 💪"
-
-            msg += "\n\n_Good night! Sleep well and recharge for tomorrow! 🌙💤_"
-
-            await channel.send(msg)
+            if not completed and not incomplete:
+                msg_blocks.append(f"**<@{user_id}>**: 📝 No tasks tracked today. Tomorrow is a fresh start! 💪\n")
+                active_users[user_id] = now_ist()
+                continue
+                
+            total = len(completed) + len(incomplete)
+            user_block = ""
+            
+            if completed and not incomplete:
+                comp_str = ", ".join(completed)
+                user_block += f"<@{user_id}>, you had {total} tasks today and you managed to complete all of them! 🎉 Incredible work. Those were: **{comp_str}**.\n\n"
+            elif completed and incomplete:
+                comp_str = ", ".join(completed)
+                inc_str = ", ".join(incomplete)
+                user_block += f"<@{user_id}>, you had {total} tasks today. You managed to do {len(completed)}, which were: **{comp_str}**. "
+                user_block += f"You still have {len(incomplete)} task(s) pending: **{inc_str}**. Would you like me to reschedule them for tomorrow?\n\n"
+            elif incomplete and not completed:
+                inc_str = ", ".join(incomplete)
+                user_block += f"<@{user_id}>, you had {total} tasks today. These are still pending: **{inc_str}**. Would you like me to reschedule them for tomorrow?\n\n"
+            
+            msg_blocks.append(user_block.strip())
             active_users[user_id] = now_ist()
         except Exception as e:
-            print(f"Error sending night summary to {user_name}: {e}")
+            print(f"Error compiling night summary for {user_name}: {e}")
+
+    msg_blocks.append("\n_Good night! Sleep well and recharge for tomorrow! 🌙💤_")
+    
+    try:
+        await channel.send("\n".join(msg_blocks))
+    except Exception as e:
+        print(f"Error sending combined night summary: {e}")
 
 
 async def journal_reflection():
@@ -732,16 +762,17 @@ async def journal_reflection():
 
     question = random.choice(reflection_questions)
 
-    for user_name, user_id in users:
-        try:
-            msg = f"📝 **Daily Reflection** — <@{user_id}>\n\n"
-            msg += f"✨ *{question}*\n\n"
-            msg += "_Take a moment to reflect. Reply with your thoughts and I'll save them to your journal._ 📖"
+    mentions = " ".join([f"<@{uid}>" for _, uid in users])
+    msg = f"📝 **Daily Reflection** — {mentions}\n\n"
+    msg += f"✨ *{question}*\n\n"
+    msg += "_Take a moment to reflect. Reply with your thoughts and I'll save them to your journal._ 📖"
 
-            await channel.send(msg)
+    try:
+        await channel.send(msg)
+        for _, user_id in users:
             active_users[user_id] = now_ist()
-        except Exception as e:
-            print(f"Error sending journal reflection to {user_name}: {e}")
+    except Exception as e:
+        print(f"Error sending journal reflection: {e}")
 
 
 async def autonomous_memory_check():
@@ -1365,6 +1396,7 @@ You send the following proactive messages every day. Each can be individually to
 - **list_proactive**: Show all proactive features and their ON/OFF status.
 - **reschedule_tasks**: Move incomplete tasks to today.
 - **add_journal**: Save a journal/reflection entry. Do NOT ask to confirm — just save and acknowledge warmly.
+   - **CRITICAL**: If the user answers a reflection question or talks about their day, YOU MUST immediately call the `add_journal` tool to save their entry. Do not just chat with them normally about it — explicitly save it!
 - **get_journal**: Show past journal entries.
 - **save_memory**: **PROACTIVELY** save important facts about the user. Use this when you learn something new about them:
    - Personal facts: name, age, college, job, location
@@ -1372,6 +1404,7 @@ You send the following proactive messages every day. Each can be individually to
    - Preferences: "Likes late night coding", "Prefers short messages"
    - Important dates: "Exam on May 5th", "Birthday is March 20"
    - Habits/patterns: "Usually works after 9 PM", "Forgets to drink water"
+   - **CRITICAL LIMITATION**: If the user corrects an old memory (e.g. changes their birthday), you MUST call `forget_memory` on the old fact FIRST before saving the new one.
    - Do NOT ask "should I remember this?" — just save it silently when something important comes up.
    - Do NOT save trivial things like "they said hi" or "they asked about weather".
 - **get_memories**: Retrieve saved memories for a user.
