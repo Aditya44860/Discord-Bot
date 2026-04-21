@@ -79,6 +79,18 @@ def get_user_sheet(username):
         ws.append_row(["Date", "User", "Task", "Status"])
         return ws
 
+def get_completed_user_sheet(username):
+    """Get or create the '[username]_completed' sheet for task archival."""
+    name = username.lower().replace("#", "_").replace(" ", "_")
+    sheet_name = f"{name}_completed"
+
+    try:
+        return spreadsheet.worksheet(sheet_name)
+    except:
+        ws = spreadsheet.add_worksheet(title=sheet_name, rows="1000", cols="5")
+        ws.append_row(["Original Date", "User", "Task", "Status", "Completed At"])
+        return ws
+
 def get_reminders_sheet():
     """Get or create the 'reminders' sheet in Google Sheets."""
     try:
@@ -902,44 +914,106 @@ def get_tasks(user: str, status_filter: str = "all"):
 
 
 @tool
-def update_task(task_name: str, user: str):
-    """Mark a task as done based on its name."""
+def mark_tasks_done(task_names: list, user: str):
+    """Mark one or multiple tasks as done and move them to the archival 'completed' sheet.
+    task_names: A list of task names or keywords to mark as done (e.g. ['buy milk', 'call mom']).
+    user: Discord username.
+    """
     sheet = get_user_sheet(user)
+    completed_sheet = get_completed_user_sheet(user)
     rows = sheet.get_all_values()
+    today = now_ist().strftime("%Y-%m-%d %H:%M:%S")
 
-    for i, r in enumerate(rows[1:], start=2):
-        if task_name.lower() in r[2].lower():
-            sheet.update([[r[0], r[1], r[2], "done"]], range_name=f"A{i}:D{i}")
-            set_row_color(sheet, i, "done")
-            return f"Marked '{r[2]}' as done."
+    if len(rows) <= 1:
+        return "You have no tasks to complete."
 
-    # Fuzzy match locally to save tokens — only return the best suggestion
-    existing = [r[2] for r in rows[1:] if r[2]]
-    matches = get_close_matches(task_name.lower(), [t.lower() for t in existing], n=1, cutoff=0.4)
-    if matches:
-        original = existing[[t.lower() for t in existing].index(matches[0])]
-        return f"Task '{task_name}' not found. Did you mean: '{original}'?"
-    return "Task not found. No similar tasks exist."
+    results = []
+    rows_to_delete = []
+    rows_to_archive = []
+
+    for name in task_names:
+        found = False
+        for i, r in enumerate(rows[1:], start=2):
+            if i in rows_to_delete:
+                continue
+            if len(r) >= 3 and name.lower() in r[2].lower():
+                # Archive format: Original Date, User, Task, Status, Completed At
+                rows_to_archive.append([r[0], r[1], r[2], "done", today])
+                rows_to_delete.append(i)
+                results.append(f"✅ Archived: '{r[2]}'")
+                found = True
+                break
+        
+        if not found:
+            existing = [r[2] for idx, r in enumerate(rows[1:], start=2) if len(r) >= 3 and idx not in rows_to_delete]
+            matches = get_close_matches(name.lower(), [t.lower() for t in existing], n=1, cutoff=0.4)
+            if matches:
+                original = existing[[t.lower() for t in existing].index(matches[0])]
+                results.append(f"❓ Could not find '{name}'. Did you mean '{original}'?")
+            else:
+                results.append(f"❌ Could not find '{name}'.")
+
+    # 1. Archive to completed sheet
+    if rows_to_archive:
+        try:
+            completed_sheet.append_rows(rows_to_archive)
+        except Exception as e:
+            return f"Error archiving tasks: {e}"
+    
+    # 2. Delete from main sheet in reverse order to maintain indices
+    if rows_to_delete:
+        try:
+            for i in sorted(rows_to_delete, reverse=True):
+                sheet.delete_rows(i)
+        except Exception as e:
+            return f"Error removing tasks from main sheet: {e}. Note: some tasks may have been archived already."
+
+    return "\n".join(results)
 
 
 @tool
-def delete_task(task_name: str, user: str):
-    """Delete a task from the user's list."""
+def delete_tasks(task_names: list, user: str):
+    """Permanently delete one or multiple tasks from the main list.
+    task_names: A list of task names or keywords to delete (e.g. ['buy milk', 'call mom']).
+    user: Discord username.
+    """
     sheet = get_user_sheet(user)
     rows = sheet.get_all_values()
 
-    for i, r in enumerate(rows[1:], start=2):
-        if task_name.lower() in r[2].lower():
-            sheet.delete_rows(i)
-            return f"Deleted '{r[2]}'."
+    if len(rows) <= 1:
+        return "You have no tasks to delete."
 
-    # Fuzzy match locally to save tokens — only return the best suggestion
-    existing = [r[2] for r in rows[1:] if r[2]]
-    matches = get_close_matches(task_name.lower(), [t.lower() for t in existing], n=1, cutoff=0.4)
-    if matches:
-        original = existing[[t.lower() for t in existing].index(matches[0])]
-        return f"Task '{task_name}' not found. Did you mean: '{original}'?"
-    return "Task not found. No similar tasks exist."
+    results = []
+    rows_to_delete = []
+
+    for name in task_names:
+        found = False
+        for i, r in enumerate(rows[1:], start=2):
+            if i in rows_to_delete:
+                continue
+            if len(r) >= 3 and name.lower() in r[2].lower():
+                rows_to_delete.append(i)
+                results.append(f"🗑️ Deleted: '{r[2]}'")
+                found = True
+                break
+        
+        if not found:
+            existing = [r[2] for idx, r in enumerate(rows[1:], start=2) if len(r) >= 3 and idx not in rows_to_delete]
+            matches = get_close_matches(name.lower(), [t.lower() for t in existing], n=1, cutoff=0.4)
+            if matches:
+                original = existing[[t.lower() for t in existing].index(matches[0])]
+                results.append(f"❓ Could not find '{name}'. Did you mean '{original}'?")
+            else:
+                results.append(f"❌ Could not find '{name}'.")
+
+    if rows_to_delete:
+        try:
+            for i in sorted(rows_to_delete, reverse=True):
+                sheet.delete_rows(i)
+        except Exception as e:
+            return f"Error deleting tasks: {e}"
+
+    return "\n".join(results)
 
 
 @tool
@@ -1319,7 +1393,7 @@ def forget_memory(memory_keyword: str, user_id: str):
         return f"Error deleting memory: {e}"
 
 
-tools = [add_tasks, get_tasks, update_task, delete_task, schedule_reminder_tool,
+tools = [add_tasks, get_tasks, mark_tasks_done, delete_tasks, schedule_reminder_tool,
          get_reminders, delete_reminder, shift_reminder, toggle_proactive, list_proactive,
          reschedule_tasks, add_journal, get_journal, save_memory, get_memories, forget_memory]
 tool_map = {t.name: t for t in tools}
@@ -1503,14 +1577,17 @@ def agent_node(state):
         except Exception as e:
             last_error = e
             error_str = str(e).lower()
+            
+            # Determine if we should put this tier on cooldown (Rate Limits)
             if "429" in error_str or "rate" in error_str or "limit" in error_str:
-                # Put this tier on cooldown
                 tier_cooldowns[tier_name] = current_time + timedelta(seconds=COOLDOWN_SECONDS)
                 print(f"[Cascade] {tier_name} rate-limited. Cooldown for {COOLDOWN_SECONDS}s. Falling to next tier...")
                 continue
-            else:
-                # Non-rate-limit error — don't cascade, just raise
-                raise e
+            
+            # For other errors (timeouts, 5xx, or even invalid model names), fall back to the next tier
+            # but don't necessarily trigger a 60s cooldown unless it was a rate limit.
+            print(f"[Cascade] {tier_name} failed with error: {e}. Falling to next tier...")
+            continue
 
     # All 3 tiers exhausted
     print(f"[Cascade] All tiers exhausted. Last error: {last_error}")
